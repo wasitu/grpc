@@ -34,6 +34,6 @@ typedef void (^GRPCQueueCompletionHandler)(bool success);
  */
 @interface GRPCCompletionQueue : NSObject
 @property(nonatomic, readonly) grpc_completion_queue *unmanagedQueue;
-
+@property(nonatomic, readonly) NSOperationQueue *operationQueue;
 + (instancetype)completionQueue;
 @end

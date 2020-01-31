@@ -31,50 +31,36 @@ const grpc_completion_queue_attributes kCompletionQueueAttr = {
   dispatch_once(&onceToken, ^{
     singleton = [[self alloc] init];
   });
-  return singleton;
+    [singleton.operationQueue cancelAllOperations];
+    NSBlockOperation *operation = [[NSBlockOperation alloc] init];
+    __unsafe_unretained typeof(operation) weakOperation = operation;
+    [operation addExecutionBlock:^{
+        while (!weakOperation.isCancelled) {
+            // The following call blocks until an event is available.
+            grpc_event event =
+                grpc_completion_queue_next(singleton.unmanagedQueue, gpr_inf_future(GPR_CLOCK_REALTIME), NULL);
+            GRPCQueueCompletionHandler handler;
+            switch (event.type) {
+              case GRPC_OP_COMPLETE:
+                handler = (__bridge_transfer GRPCQueueCompletionHandler)event.tag;
+                handler(event.success);
+                break;
+              case GRPC_QUEUE_SHUTDOWN:
+                grpc_completion_queue_destroy(singleton.unmanagedQueue);
+                return;
+              default:
+                [NSException raise:@"Unrecognized completion type" format:@""];
+            }
+        }
+    }];
+    [singleton.operationQueue addOperation:operation];
+    return singleton;
 }
 
 - (instancetype)init {
   if ((self = [super init])) {
-    _unmanagedQueue = grpc_completion_queue_create(
-        grpc_completion_queue_factory_lookup(&kCompletionQueueAttr), &kCompletionQueueAttr, NULL);
-
-    // This is for the following block to capture the pointer by value (instead
-    // of retaining self and doing self->_unmanagedQueue). This is essential
-    // because the block doesn't end until after grpc_completion_queue_shutdown
-    // is called, and we only want that to happen after nobody's using the queue
-    // anymore (i.e. on self dealloc). So the block would never end if it
-    // retained self.
-    grpc_completion_queue *unmanagedQueue = _unmanagedQueue;
-
-    // Start a loop on a concurrent queue to read events from the completion
-    // queue and dispatch each.
-    static dispatch_once_t initialization;
-    static dispatch_queue_t gDefaultConcurrentQueue;
-    dispatch_once(&initialization, ^{
-      gDefaultConcurrentQueue = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0);
-    });
-    dispatch_async(gDefaultConcurrentQueue, ^{
-      while (YES) {
-        @autoreleasepool {
-          // The following call blocks until an event is available.
-          grpc_event event =
-              grpc_completion_queue_next(unmanagedQueue, gpr_inf_future(GPR_CLOCK_REALTIME), NULL);
-          GRPCQueueCompletionHandler handler;
-          switch (event.type) {
-            case GRPC_OP_COMPLETE:
-              handler = (__bridge_transfer GRPCQueueCompletionHandler)event.tag;
-              handler(event.success);
-              break;
-            case GRPC_QUEUE_SHUTDOWN:
-              grpc_completion_queue_destroy(unmanagedQueue);
-              return;
-            default:
-              [NSException raise:@"Unrecognized completion type" format:@""];
-          }
-        }
-      };
-    });
+      _unmanagedQueue = grpc_completion_queue_create(grpc_completion_queue_factory_lookup(&kCompletionQueueAttr), &kCompletionQueueAttr, NULL);
+      _operationQueue = [[NSOperationQueue alloc] init];
   }
   return self;
 }
